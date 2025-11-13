@@ -1,9 +1,3 @@
-# main.py
-"""
-bongosorous - Ultra-ready Discord bot (main.py)
-Paste this file into your project root. Add required env vars and requirements.txt.
-"""
-
 import os
 import sys
 import time
@@ -21,35 +15,24 @@ from discord import app_commands
 from discord.ext import commands
 from flask import Flask, jsonify
 
-# Optional Hugging Face client (will work only if huggingface_hub is installed and key provided)
 try:
     from huggingface_hub import InferenceClient
 except Exception:
     InferenceClient = None
 
-# -------------------------
-# Config
-# -------------------------
 BOT_NAME = "bongosorous"
 DB_FILE = os.environ.get("BOT_DB_PATH", "bongobot.db")
 HF_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
 MAX_RESPONSE_LENGTH = 1900
-REMINDER_INTERVAL = 5  # seconds
+REMINDER_INTERVAL = 5
 SLASH_SYNC_RETRIES = 3
 SLASH_SYNC_WAIT = 2
 
-# emojis for polls
 NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 
-# -------------------------
-# Logging
-# -------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(BOT_NAME)
 
-# -------------------------
-# Environment
-# -------------------------
 DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 HF_KEY = os.environ.get("HUGGINGFACE_API_KEY")
 BOT_OWNER_ID = int(os.environ.get("BOT_OWNER_ID", "0") or 0)
@@ -59,9 +42,6 @@ if not DISCORD_TOKEN:
     logger.critical("DISCORD_BOT_TOKEN missing. Exiting.")
     sys.exit(1)
 
-# -------------------------
-# Hugging Face client (optional)
-# -------------------------
 hf_client = None
 if HF_KEY and InferenceClient:
     try:
@@ -77,7 +57,6 @@ else:
         logger.info("Hugging Face not configured — /ask will be disabled.")
 
 def hf_sync(prompt: str) -> Tuple[Optional[str], Optional[str]]:
-    """Synchronous HF call (safe wrapper)"""
     if not hf_client:
         return None, "HF not configured"
     try:
@@ -86,7 +65,6 @@ def hf_sync(prompt: str) -> Tuple[Optional[str], Optional[str]]:
             {"role": "user", "content": prompt}
         ]
         resp = hf_client.chat_completion(messages=messages, model=HF_MODEL, max_tokens=400, temperature=0.8)
-        # robust extraction
         try:
             text = resp.choices[0].message.content
         except Exception:
@@ -110,9 +88,6 @@ async def hf_query(prompt: str, timeout: int = 20) -> Tuple[Optional[str], Optio
         logger.exception("Error during HF query")
         return None, str(e)
 
-# -------------------------
-# SQLite DB init
-# -------------------------
 Path(DB_FILE).parent.mkdir(parents=True, exist_ok=True)
 
 def get_conn():
@@ -156,9 +131,6 @@ def init_db():
 
 init_db()
 
-# -------------------------
-# Bot setup
-# -------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -166,23 +138,22 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# remove default help (prevent duplicate)
 try:
     bot.remove_command("help")
 except Exception:
     pass
 
-# -------------------------
-# Utility DB helpers
-# -------------------------
 def ensure_user(uid: int):
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (uid,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
 def add_xp(uid: int, amount: int = 1) -> Optional[int]:
     ensure_user(uid)
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("UPDATE users SET xp = xp + ? WHERE user_id = ?", (amount, uid))
     conn.commit()
     c.execute("SELECT xp, level FROM users WHERE user_id = ?", (uid,))
@@ -191,14 +162,16 @@ def add_xp(uid: int, amount: int = 1) -> Optional[int]:
     new_level = int(math.sqrt(xp))
     if new_level > lvl:
         c.execute("UPDATE users SET level = ? WHERE user_id = ?", (new_level, uid))
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
         return new_level
     conn.close()
     return None
 
 def change_coins(uid: int, delta: int) -> int:
     ensure_user(uid)
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (delta, uid))
     conn.commit()
     c.execute("SELECT coins FROM users WHERE user_id = ?", (uid,))
@@ -206,16 +179,14 @@ def change_coins(uid: int, delta: int) -> int:
     conn.close()
     return coins
 
-# -------------------------
-# Reminder background worker
-# -------------------------
 async def reminder_worker():
     await bot.wait_until_ready()
     logger.info("Reminder worker started.")
     while not bot.is_closed():
         try:
             now = int(time.time())
-            conn = get_conn(); c = conn.cursor()
+            conn = get_conn()
+            c = conn.cursor()
             c.execute("SELECT id, user_id, channel_id, content FROM reminders WHERE remind_at <= ?", (now,))
             rows = c.fetchall()
             for r in rows:
@@ -232,47 +203,48 @@ async def reminder_worker():
             logger.exception("Reminder worker top-level error")
         await asyncio.sleep(REMINDER_INTERVAL)
 
-# schedule reminder worker after ready
 @bot.event
 async def on_ready():
     logger.info("Logged in as %s (id=%s)", bot.user, bot.user.id)
-    # set status
     try:
         await bot.change_presence(activity=discord.Game(f"{BOT_NAME} — /help"))
     except Exception:
         pass
-    # start reminder worker if not running
     if not any(t.get_name() == "reminder_worker" for t in asyncio.all_tasks(loop=asyncio.get_running_loop())):
         bot.loop.create_task(reminder_worker(), name="reminder_worker")
-    # sync slash commands with retries
     for attempt in range(SLASH_SYNC_RETRIES):
         try:
             synced = await bot.tree.sync()
             logger.info("Synced %d slash commands", len(synced))
             break
         except Exception:
-            logger.exception("Slash sync attempt failed")
+            logger.exception("Slash sync attempt %d failed", attempt + 1)
             await asyncio.sleep(SLASH_SYNC_WAIT)
     else:
         logger.error("Failed to sync slash commands after retries.")
 
-# XP gain on messages and process commands
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
-    # XP
+    
+    answer = active_trivia.get(message.channel.id)
+    if answer and message.content.lower().strip() == answer:
+        try:
+            await message.channel.send(f"🎉 {message.author.mention} got it! The answer was **{answer}**")
+            active_trivia.pop(message.channel.id, None)
+            change_coins(message.author.id, 10)
+        except Exception:
+            logger.exception("Trivia answer error")
+    
     try:
-        lvl = add_xp(message.author.id, amount=random.randint(1,3))
+        lvl = add_xp(message.author.id, amount=random.randint(1, 3))
         if lvl:
             await message.channel.send(f"🎉 {message.author.mention} reached level **{lvl}**!")
     except Exception:
         logger.exception("XP error")
+    
     await bot.process_commands(message)
-
-# -------------------------
-# Commands
-# -------------------------
 
 HELP_TEXT = f"""
 **{BOT_NAME} — Help**
@@ -282,20 +254,18 @@ HELP_TEXT = f"""
 /poll <question> <opt1,opt2,...> — Poll
 !remindme 10m message — Reminder (prefix)
 /daily, !balance, !give @user amount — Economy
-!kick, !ban, !warn, !purge — Moderation (requires perms)
+!kick, !ban, !purge — Moderation (requires perms)
+!createreactionrole <msg_id> <emoji> <@role> — Reaction roles
 """
 
-# slash help
 @bot.tree.command(name="help", description="Show help")
 async def help_slash(interaction: discord.Interaction):
     await interaction.response.send_message(HELP_TEXT)
 
-# prefix help
 @bot.command(name="help")
 async def help_prefix(ctx):
     await ctx.send(HELP_TEXT)
 
-# ---------- /ask and !ask ----------
 @bot.tree.command(name="ask", description="Ask the AI (Hugging Face)")
 @app_commands.describe(question="Your question")
 async def ask_slash(interaction: discord.Interaction, question: str):
@@ -319,7 +289,6 @@ async def ask_prefix(ctx, *, question: str):
     else:
         await thinking.edit(content=f"❌ AI error: {err}")
 
-# ---------- Trivia ----------
 TRIVIA = [
     ("What is the capital of France?", "paris"),
     ("What planet is known as the Red Planet?", "mars"),
@@ -329,25 +298,24 @@ TRIVIA = [
     ("What year did Titanic sink?", "1912"),
 ]
 
-active_trivia: Dict[int,str] = {}
+active_trivia: Dict[int, str] = {}
 
 @bot.tree.command(name="trivia", description="Start a trivia question")
 async def trivia_slash(interaction: discord.Interaction):
-    q,a = random.choice(TRIVIA)
+    q, a = random.choice(TRIVIA)
     active_trivia[interaction.channel_id] = a.lower()
     await interaction.response.send_message(f"🧠 Trivia: {q} (answer in chat)")
 
 @bot.command(name="trivia")
 async def trivia_prefix(ctx):
-    q,a = random.choice(TRIVIA)
+    q, a = random.choice(TRIVIA)
     active_trivia[ctx.channel.id] = a.lower()
     await ctx.send(f"🧠 Trivia: {q} (answer in chat)")
 
-# ---------- RPS ----------
 @bot.tree.command(name="rps", description="Play rock-paper-scissors")
 @app_commands.describe(choice="rock/paper/scissors")
 async def rps_slash(interaction: discord.Interaction, choice: str):
-    opts = ["rock","paper","scissors"]
+    opts = ["rock", "paper", "scissors"]
     choice = choice.lower()
     if choice not in opts:
         await interaction.response.send_message("Choose rock / paper / scissors")
@@ -355,7 +323,7 @@ async def rps_slash(interaction: discord.Interaction, choice: str):
     bot_choice = random.choice(opts)
     if choice == bot_choice:
         res = "Tie!"
-    elif (choice=="rock" and bot_choice=="scissors") or (choice=="paper" and bot_choice=="rock") or (choice=="scissors" and bot_choice=="paper"):
+    elif (choice == "rock" and bot_choice == "scissors") or (choice == "paper" and bot_choice == "rock") or (choice == "scissors" and bot_choice == "paper"):
         res = "You win!"
     else:
         res = "I win!"
@@ -363,10 +331,20 @@ async def rps_slash(interaction: discord.Interaction, choice: str):
 
 @bot.command(name="rps")
 async def rps_prefix(ctx, choice: str):
-    # reuse same logic
-    await rps_slash.callback(interaction=ctx, choice=choice)
+    opts = ["rock", "paper", "scissors"]
+    choice = choice.lower()
+    if choice not in opts:
+        await ctx.send("Choose rock / paper / scissors")
+        return
+    bot_choice = random.choice(opts)
+    if choice == bot_choice:
+        res = "Tie!"
+    elif (choice == "rock" and bot_choice == "scissors") or (choice == "paper" and bot_choice == "rock") or (choice == "scissors" and bot_choice == "paper"):
+        res = "You win!"
+    else:
+        res = "I win!"
+    await ctx.send(f"You: {choice} | Bot: {bot_choice} — {res}")
 
-# ---------- Poll ----------
 @bot.tree.command(name="poll", description="Create a poll (2-5 options)")
 @app_commands.describe(question="Question", options="Comma separated options", duration="seconds")
 async def poll_slash(interaction: discord.Interaction, question: str, options: str, duration: int = 30):
@@ -394,51 +372,74 @@ async def poll_slash(interaction: discord.Interaction, question: str, options: s
         r = discord.utils.get(fetched.reactions, emoji=NUMBER_EMOJIS[i])
         count = (r.count - 1) if r else 0
         results.append((opts[i], count))
-    await msg.channel.send("🗳️ Poll results:\n" + "\n".join(f"**{o}** — {c} vote(s)" for o,c in results))
+    await msg.channel.send("🗳️ Poll results:\n" + "\n".join(f"**{o}** — {c} vote(s)" for o, c in results))
 
-# ---------- Remindme (prefix) ----------
 @bot.command(name="remindme")
 async def remindme_cmd(ctx, when: str, *, text: str):
     try:
         unit = when[-1]
         num = int(when[:-1])
-        mult = {"s":1,"m":60,"h":3600,"d":86400}.get(unit)
+        mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit)
         if not mult:
             raise ValueError()
     except Exception:
         await ctx.send("Time format: 10m, 2h, 1d etc.")
         return
     remind_at = int(time.time()) + num * mult
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("INSERT INTO reminders (user_id, guild_id, channel_id, remind_at, content) VALUES (?, ?, ?, ?, ?)",
               (ctx.author.id, ctx.guild.id if ctx.guild else None, ctx.channel.id, remind_at, text))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     await ctx.send(f"✅ Reminder set for <t:{remind_at}:R>")
 
-# ---------- Economy (balance, daily, give) ----------
 @bot.command(name="balance")
 async def balance_cmd(ctx, member: discord.Member = None):
     member = member or ctx.author
     ensure_user(member.id)
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("SELECT coins FROM users WHERE user_id = ?", (member.id,))
-    row = c.fetchone(); conn.close()
+    row = c.fetchone()
+    conn.close()
     coins = row["coins"] if row else 0
     await ctx.send(f"{member.mention} has **{coins}** coins")
+
+@bot.tree.command(name="daily", description="Claim your daily coins")
+async def daily_slash(interaction: discord.Interaction):
+    ensure_user(interaction.user.id)
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT last_daily FROM users WHERE user_id = ?", (interaction.user.id,))
+    row = c.fetchone()
+    last = row["last_daily"] or 0
+    now = int(time.time())
+    if now - last < 86400:
+        await interaction.response.send_message("You already claimed daily.")
+    else:
+        reward = random.randint(50, 150)
+        c.execute("UPDATE users SET coins = coins + ?, last_daily = ? WHERE user_id = ?", (reward, now, interaction.user.id))
+        conn.commit()
+        conn.close()
+        await interaction.response.send_message(f"🎉 You claimed **{reward}** coins!")
 
 @bot.command(name="daily")
 async def daily_cmd(ctx):
     ensure_user(ctx.author.id)
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("SELECT last_daily FROM users WHERE user_id = ?", (ctx.author.id,))
-    row = c.fetchone(); last = row["last_daily"] or 0
+    row = c.fetchone()
+    last = row["last_daily"] or 0
     now = int(time.time())
     if now - last < 86400:
         await ctx.send("You already claimed daily.")
     else:
-        reward = random.randint(50,150)
+        reward = random.randint(50, 150)
         c.execute("UPDATE users SET coins = coins + ?, last_daily = ? WHERE user_id = ?", (reward, now, ctx.author.id))
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
         await ctx.send(f"🎉 You claimed **{reward}** coins!")
 
 @bot.command(name="give")
@@ -446,18 +447,21 @@ async def give_cmd(ctx, member: discord.Member, amount: int):
     if amount <= 0:
         await ctx.send("Amount must be > 0.")
         return
-    ensure_user(ctx.author.id); ensure_user(member.id)
-    conn = get_conn(); c = conn.cursor()
+    ensure_user(ctx.author.id)
+    ensure_user(member.id)
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,))
     if c.fetchone()["coins"] < amount:
         await ctx.send("Not enough coins.")
-        conn.close(); return
+        conn.close()
+        return
     c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (amount, ctx.author.id))
     c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, member.id))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     await ctx.send(f"{ctx.author.mention} gave {member.mention} **{amount}** coins!")
 
-# ---------- Moderation (basic) ----------
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
 async def kick_cmd(ctx, member: discord.Member, *, reason: str = "No reason provided"):
@@ -485,14 +489,15 @@ async def purge_cmd(ctx, amount: int):
     deleted = await ctx.channel.purge(limit=amount)
     await ctx.send(f"Deleted {len(deleted)} messages.", delete_after=5)
 
-# Reaction-role creation (admin)
 @bot.command(name="createreactionrole")
 @commands.has_permissions(manage_roles=True)
 async def create_reaction_role(ctx, message_id: int, emoji: str, role: discord.Role):
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("INSERT INTO reaction_roles (guild_id, message_id, emoji, role_id) VALUES (?, ?, ?, ?)",
               (ctx.guild.id, message_id, emoji, role.id))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     try:
         msg = await ctx.channel.fetch_message(message_id)
         await msg.add_reaction(emoji)
@@ -504,10 +509,12 @@ async def create_reaction_role(ctx, message_id: int, emoji: str, role: discord.R
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id:
         return
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("SELECT role_id FROM reaction_roles WHERE guild_id = ? AND message_id = ? AND emoji = ?",
               (payload.guild_id, payload.message_id, str(payload.emoji)))
-    row = c.fetchone(); conn.close()
+    row = c.fetchone()
+    conn.close()
     if row:
         guild = bot.get_guild(payload.guild_id)
         role = guild.get_role(row["role_id"])
@@ -520,10 +527,12 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    conn = get_conn(); c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor()
     c.execute("SELECT role_id FROM reaction_roles WHERE guild_id = ? AND message_id = ? AND emoji = ?",
               (payload.guild_id, payload.message_id, str(payload.emoji)))
-    row = c.fetchone(); conn.close()
+    row = c.fetchone()
+    conn.close()
     if row:
         guild = bot.get_guild(payload.guild_id)
         role = guild.get_role(row["role_id"])
@@ -534,9 +543,6 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
             except Exception:
                 logger.exception("Failed to remove role")
 
-# -------------------------
-# Flask heartbeat (so uptimerobot can ping /health)
-# -------------------------
 app = Flask(__name__)
 
 @app.route("/")
@@ -549,11 +555,8 @@ def health():
 
 def run_flask():
     logger.info("Flask starting on port %s", PORT)
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 
-# -------------------------
-# Start bot + heartbeat
-# -------------------------
 def start():
     thr = threading.Thread(target=run_flask, daemon=True)
     thr.start()
