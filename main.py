@@ -251,7 +251,8 @@ HELP_TEXT = f"""
 /ask <question> — Ask the AI (requires HF key)
 /trivia — Play trivia
 /rps <choice> — Rock Paper Scissors
-/poll <question> <opt1,opt2,...> — Poll
+/poll <question> <opt1,opt2,...> [duration] — Poll (slash)
+!poll Question | opt1, opt2, opt3 | duration — Poll (prefix)
 !remindme 10m message — Reminder (prefix)
 /daily, !balance, !give @user amount — Economy
 !kick, !ban, !purge — Moderation (requires perms)
@@ -373,6 +374,45 @@ async def poll_slash(interaction: discord.Interaction, question: str, options: s
         count = (r.count - 1) if r else 0
         results.append((opts[i], count))
     await msg.channel.send("🗳️ Poll results:\n" + "\n".join(f"**{o}** — {c} vote(s)" for o, c in results))
+
+@bot.command(name="poll")
+async def poll_prefix(ctx, *, content: str):
+    parts = content.split("|")
+    if len(parts) < 2:
+        await ctx.send("Usage: !poll Question here | option1, option2, option3 | duration_seconds(optional)")
+        return
+    question = parts[0].strip()
+    options = parts[1].strip()
+    duration = 30
+    if len(parts) >= 3:
+        try:
+            duration = int(parts[2].strip())
+        except ValueError:
+            duration = 30
+    opts = [o.strip() for o in options.split(",") if o.strip()]
+    if not 2 <= len(opts) <= 5:
+        await ctx.send("Provide 2-5 options.")
+        return
+    desc = "\n".join(f"{NUMBER_EMOJIS[i]} {opts[i]}" for i in range(len(opts)))
+    embed = discord.Embed(title=question, description=desc)
+    msg = await ctx.send(embed=embed)
+    for i in range(len(opts)):
+        try:
+            await msg.add_reaction(NUMBER_EMOJIS[i])
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+    await asyncio.sleep(max(5, min(duration, 600)))
+    try:
+        fetched = await ctx.channel.fetch_message(msg.id)
+    except Exception:
+        fetched = msg
+    results = []
+    for i in range(len(opts)):
+        r = discord.utils.get(fetched.reactions, emoji=NUMBER_EMOJIS[i])
+        count = (r.count - 1) if r else 0
+        results.append((opts[i], count))
+    await ctx.send("🗳️ Poll results:\n" + "\n".join(f"**{o}** — {c} vote(s)" for o, c in results))
 
 @bot.command(name="remindme")
 async def remindme_cmd(ctx, when: str, *, text: str):
